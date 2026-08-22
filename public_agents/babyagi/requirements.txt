@@ -1,0 +1,2 @@
+# Third-party autonomous agent pattern (BabyAGI), run on the current openai SDK.
+openai>=1.0

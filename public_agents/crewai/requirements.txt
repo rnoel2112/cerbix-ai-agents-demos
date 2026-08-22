@@ -1,0 +1,2 @@
+# Third-party multi-agent framework (CrewAI).
+crewai>=0.40

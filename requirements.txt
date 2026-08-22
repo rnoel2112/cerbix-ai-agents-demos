@@ -1,0 +1,12 @@
+# cerbix-sdk is installed separately (editable): pip install -e ../cerbix/sdk
+# Console + agents
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+openai>=1.0
+# Audit seeding
+google-cloud-firestore>=2.16
+# LangChain SQL agent demo (also has its own public_agents/sql_agent/requirements.txt)
+langchain>=0.2
+langchain-community>=0.2
+langchain-openai>=0.1

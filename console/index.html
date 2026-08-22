@@ -62,6 +62,18 @@
   .vrow.block .d,.vrow.deny .d{color:var(--red)} .vrow.redact .d{color:var(--amber)} .vrow.shadow .d{color:var(--blue)}
   .vrow .meta{color:var(--dim);margin-top:2px}
   .muted{color:var(--dim)} details summary{cursor:pointer;color:var(--accent);font-size:13px}
+  .modes{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:14px}
+  .mode{padding:7px 14px;font-size:12.5px;color:var(--dim);cursor:pointer;background:var(--panel)}
+  .mode.on{background:var(--accent);color:var(--bg);font-weight:600}
+  .event{border:1px solid var(--line);border-left:3px solid var(--slate);border-radius:8px;padding:9px 11px;margin-bottom:8px}
+  .event.block{border-left-color:var(--red)} .event.redact{border-left-color:var(--amber)} .event.shadow{border-left-color:var(--amber)} .event.allow{border-left-color:var(--green)}
+  .ev-top{display:flex;gap:10px;align-items:center;margin-bottom:5px}
+  .ev-dec{font-size:11px;font-weight:700;text-transform:uppercase}
+  .event.block .ev-dec{color:var(--red)} .event.redact .ev-dec,.event.shadow .ev-dec{color:var(--amber)} .event.allow .ev-dec{color:var(--green)}
+  .ev-phase{font-size:11px;color:var(--dim)}
+  .ev-pay{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text);word-break:break-word}
+  .ev-reason{margin-top:5px;font-size:12px}
+  #viol{max-height:280px;overflow-y:auto}
 </style>
 </head>
 <body>
@@ -69,7 +81,8 @@
 <div class="page" id="app"></div>
 <script>
 const app=document.getElementById('app');
-let sel=null, timer=null;
+let sel=null, timer=null, passive=false, curId=null;
+const PQ=()=>passive?'?passive=true':'';
 async function j(u,o){const r=await fetch(u,o);return r.json();}
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function route(){if(timer)clearInterval(timer);const h=location.hash;
@@ -94,8 +107,18 @@ function diagram(flow){
     (i<flow.length-1?`<div class="arrow">↓</div>`:'')).join('')+`</div>`;
 }
 
+function modeToggle(a){
+  if(!a.passive)return '';
+  return `<div class="modes">
+    <span class="mode ${!passive?'on':''}" onclick="setMode(false)">Active · enforce inline</span>
+    <span class="mode ${passive?'on':''}" onclick="setMode(true)">Passive · observe &amp; flag</span>
+  </div>`;
+}
+function setMode(p){passive=p;detail(curId);}
+
 async function detail(id){
-  const a=await j('/api/agent/'+id);
+  curId=id;
+  const a=await j('/api/agent/'+id+PQ());
   document.getElementById('crumb').innerHTML=`<a onclick="location.hash='#/'">Agents</a> · ${esc(a.name)}`;
   sel=a.actions[0]?a.actions[0].id:null;
   app.innerHTML=`
@@ -103,9 +126,11 @@ async function detail(id){
     <div style="font-size:20px;font-weight:600">${esc(a.name)}</div>
     <div style="color:var(--accent);font-size:12px;margin:2px 0 12px">${esc(a.tag)}</div>
     <div class="box lead">${esc(a.purpose)}<div class="how"><b style="color:var(--text);font-weight:600">How it's built.</b> ${esc(a.how)}</div></div>
+    ${modeToggle(a)}
     <div class="cols" style="margin-top:22px">
       <div>
         <h2>Block diagram</h2><div class="box">${diagram(a.flow)}</div>
+        <h2>Payload &amp; interception points</h2><div id="events" class="box"><span class="muted">Run a scenario to see the payload Cerbix inspects and where it intercepts.</span></div>
         <h2>Source</h2><details class="box"><summary>View code (${a.code.map(esc).join(', ')})</summary><div id="code">loading…</div></details>
       </div>
       <div>
@@ -128,9 +153,38 @@ function renderRuns(a){
       <button class="stop" onclick="event.stopPropagation();act('stop','${a.id}','${x.id}')">■</button>
     </div>`).join('');
 }
-async function refreshRuns(id){const a=await j('/api/agent/'+id);
+async function refreshRuns(id){const a=await j('/api/agent/'+id+PQ());
   a.actions.forEach(x=>{const d=document.querySelector('.dot[data-a="'+x.id+'"]');if(d)d.className='dot '+x.status;});}
-async function act(kind,id,action){sel=action;await fetch('/api/'+kind+'/'+id+'/'+action,{method:'POST'});pollLog(id);refreshRuns(id);}
+async function act(kind,id,action){sel=action;await fetch('/api/'+kind+'/'+id+'/'+action+PQ(),{method:'POST'});pollLog(id);refreshRuns(id);}
+
+function parseEvents(lines){
+  const ev=[]; let cur=null;
+  const grab=(l,re)=>{const m=l.match(re);return m?m[1].trim():null;};
+  for(const l of lines){
+    let m=grab(l,/payload\s*▸\s*(.*)/);
+    if(m){if(cur)ev.push(cur);cur={payload:m};continue;}
+    if(!cur)continue;
+    m=grab(l,/intercept\s*▸\s*(.*)/); if(m){cur.intercept=m;continue;}
+    if(/cerbix\s*▸/.test(l)){
+      cur.decision=(l.match(/BLOCKED|FLAGGED|REDACTED|ALLOWED|SHADOW/i)||['?'])[0];
+      cur.reason=(l.match(/Org rule:[^]*?(?=$)|DLP:.*|No rule matched/)||[''])[0];
+      ev.push(cur);cur=null;}
+  }
+  if(cur)ev.push(cur);
+  return ev;
+}
+function renderEvents(lines){
+  const el=document.getElementById('events'); if(!el)return;
+  const ev=parseEvents(lines);
+  if(!ev.length){return;}
+  const cls=d=>({blocked:'block',flagged:'shadow',redacted:'redact',allowed:'allow',shadow:'shadow'}[(d||'').toLowerCase()]||'');
+  el.innerHTML=ev.map(e=>`<div class="event ${cls(e.decision)}">
+    <div class="ev-top"><span class="ev-dec">${esc(e.decision||'')}</span>
+      <span class="ev-phase">${esc(e.intercept||'')}</span></div>
+    <div class="ev-pay">${esc(e.payload||'')}</div>
+    ${e.reason?`<div class="ev-reason"><span class="pol">${esc(e.reason)}</span></div>`:''}
+  </div>`).join('');
+}
 
 const VERB={blocked:'block',allowed:'allow',redacted:'redact',shadow:'shadow'};
 function classify(l){
@@ -147,9 +201,10 @@ function fmtLog(lines){const c={block:0,redact:0,shadow:0,allow:0};
     return `<span class="ln ${cls}">${h||' '}</span>`;}).join('');
   return {body,c};}
 async function pollLog(id){if(!sel)return;
-  const d=await j('/api/logs/'+id+'/'+sel);const box=document.getElementById('log');if(!box)return;
+  const d=await j('/api/logs/'+id+'/'+sel+PQ());const box=document.getElementById('log');if(!box)return;
   const bottom=box.scrollTop+box.clientHeight>=box.scrollHeight-30;
   if(!d.lines.length){box.innerHTML='<span class="muted">(no output yet)</span>';document.getElementById('logsummary').innerHTML='';return;}
+  renderEvents(d.lines);
   const r=fmtLog(d.lines);box.innerHTML=r.body;
   const chips=Object.entries(r.c).filter(([,n])=>n>0).map(([k,n])=>`<span class="chip ${k}">${n} ${k}${n>1?'s':''}</span>`).join('');
   document.getElementById('logsummary').innerHTML=chips||(d.status==='running'?'<span class="chip">running…</span>':'');

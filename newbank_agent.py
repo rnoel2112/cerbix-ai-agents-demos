@@ -97,40 +97,73 @@ def _audit(action, resource, decision, reason, agent_id=AGENT_ID):
         pass
 
 
+# Passive = out-of-band review: Cerbix sees the payload and FLAGS the issue, but
+# the action still runs (nothing injected into the call path). Active (default) =
+# cerbix.init() in the path, enforcing inline. Toggled by `--passive`.
+PASSIVE = False
+
+
+def _enforced(d):
+    """True only when Cerbix actually stops the action (active + a block rule)."""
+    return d.enforced_block and not PASSIVE
+
+
 def guard(action, resource, attributes=None, response_body="", agent_id=AGENT_ID):
-    """The Cerbix gate. Returns the Decision; callers honour enforced_block."""
+    """The Cerbix gate. Prints the payload + interception point + decision."""
     ctx = DecisionContext(org_id=ORG, agent_id=agent_id, action=action,
                           resource=resource, attributes=attributes or {},
                           response_body=response_body)
     d = _sync.decide(ctx)
-    verb = ("BLOCK" if d.enforced_block else
-            "REDACT" if d.redacted else
-            "SHADOW" if d.shadowed else "ALLOW")
-    icon = {"BLOCK": f"{RED}⛔ BLOCKED", "REDACT": f"{YEL}🛡  REDACTED",
-            "SHADOW": f"{YEL}👁  SHADOW", "ALLOW": f"{GRN}✅ ALLOWED"}[verb]
-    print(f"   {DIM}cerbix ▸{RST} {icon}{RST} {DIM}{resource}"
+
+    # Make the payload and the interception point visible.
+    is_resp = action == "response_scan"
+    phase = "response-phase · DLP scan" if is_resp else "request-phase · policy cascade"
+    payload = (response_body if is_resp else json.dumps(attributes or {}))[:90]
+    mode = "PASSIVE (observe)" if PASSIVE else "ACTIVE (enforce)"
+    print(f"   {DIM}payload   ▸ {resource}  {payload}{RST}")
+    print(f"   {DIM}intercept ▸ {phase}  ·  {mode}{RST}")
+
+    if PASSIVE and (d.enforced_block or d.redacted):
+        verb, icon = "FLAG", f"{YEL}👁  FLAGGED (would block)"
+        audit_dec = "shadow"
+    elif d.enforced_block:
+        verb, icon, audit_dec = "BLOCK", f"{RED}⛔ BLOCKED", "BLOCK"
+    elif d.redacted:
+        verb, icon, audit_dec = "REDACT", f"{YEL}🛡  REDACTED", "REDACT"
+    elif d.shadowed:
+        verb, icon, audit_dec = "SHADOW", f"{YEL}👁  SHADOW", "shadow"
+    else:
+        verb, icon, audit_dec = "ALLOW", f"{GRN}✅ ALLOWED", "allow"
+    print(f"   {DIM}cerbix    ▸{RST} {icon}{RST} {DIM}{resource}"
           f"{('  '+d.reason) if d.reason else ''}{RST}")
-    _audit(action, resource, verb, d.reason or "", agent_id=agent_id)
+    _audit(action, resource, audit_dec, d.reason or "", agent_id=agent_id)
     return d
 
 
 # ── Tools the agent can call (real actions, each Cerbix-guarded) ──
 
+def _flag_note(d):
+    """When passive lets a would-be-blocked action through, say so loudly."""
+    if PASSIVE and d.enforced_block:
+        return f" ⚠ PASSIVE: Cerbix flagged this ({d.reason}) but did NOT stop it."
+    return ""
+
+
 def wire_transfer(amount: float, counterparty: str = "") -> str:
     d = guard("POST", "/execute_wire_transfer",
               {"amount": amount, "counterparty": counterparty})
-    if d.enforced_block:
+    if _enforced(d):
         return f"DENIED by Cerbix policy: {d.reason}. The transfer did not execute."
-    return f"OK: wired ${amount:,.0f} to {counterparty or 'beneficiary'}."
+    return f"OK: wired ${amount:,.0f} to {counterparty or 'beneficiary'}.{_flag_note(d)}"
 
 
 def execute_trade(symbol: str, quantity: int) -> str:
     hour = datetime.datetime.now().hour
     d = guard("POST", "/execute_trade", {"symbol": symbol, "quantity": quantity,
                                          "hour": hour})
-    if d.enforced_block:
+    if _enforced(d):
         return f"DENIED by Cerbix policy: {d.reason}. No order was placed."
-    return f"OK: placed order {quantity} {symbol} (hour={hour})."
+    return f"OK: placed order {quantity} {symbol} (hour={hour}).{_flag_note(d)}"
 
 
 def get_customer_record(customer_id: str) -> str:
@@ -138,16 +171,18 @@ def get_customer_record(customer_id: str) -> str:
     record = (f"Customer {customer_id}: Jane Doe, SSN 123-45-6789, "
               f"card 4111111111111111, balance $84,200. Status: good standing.")
     d = guard("response_scan", f"/customers/{customer_id}", response_body=record)
-    if d.redacted:
+    if d.redacted and not PASSIVE:
         return "OK (PII redacted by Cerbix): " + redact_pii(record)
-    return "OK: " + record
+    note = (" ⚠ PASSIVE: Cerbix flagged PII exposure but did NOT redact it."
+            if PASSIVE and d.redacted else "")
+    return "OK: " + record + note
 
 
 def delete_database(name: str) -> str:
     d = guard("POST", f"/tools/delete_database/{name}")
-    if d.enforced_block:
+    if _enforced(d):
         return f"DENIED by Cerbix policy: {d.reason}. Nothing was deleted."
-    return f"OK: dropped database {name}."
+    return f"OK: dropped database {name}.{_flag_note(d)}"
 
 
 def bulk_export(dataset: str) -> str:
@@ -325,6 +360,11 @@ def run_runaway():
 
 
 def main():
+    global PASSIVE
+    PASSIVE = "--passive" in sys.argv
+    argv = [a for a in sys.argv[1:] if a not in ("--passive", "--runaway")]
+    mode = "PASSIVE — observe & flag only" if PASSIVE else "ACTIVE — enforce inline"
+
     if "--runaway" in sys.argv:
         print(f"\n{BLD}NewBank — runaway agent containment{RST} {DIM}(live){RST}")
         cerbix_boot()
@@ -332,19 +372,19 @@ def main():
         return
     print(f"\n{BLD}NewBank Ops Assistant{RST} {DIM}— autonomous agent, governed by Cerbix{RST}")
     n = cerbix_boot()
-    print(f"{DIM}cerbix ▸ synced {n} live policies for org {ORG[:8]}… "
-          f"— enforcing in-process{RST}\n")
+    tag = "observing" if PASSIVE else "enforcing in-process"
+    print(f"{DIM}cerbix ▸ synced {n} live policies · mode: {mode} · {tag}{RST}\n")
 
     provider = ("openai" if os.environ.get("OPENAI_API_KEY") else
                 "gemini" if os.environ.get("GEMINI_API_KEY") else None)
     if not provider:
-        print(f"{RED}No LLM key found in clientAI/.env.local "
+        print(f"{RED}No LLM key found in .env.local "
               f"(set OPENAI_API_KEY or GEMINI_API_KEY).{RST}")
         sys.exit(1)
     runner = run_openai if provider == "openai" else run_gemini
     print(f"{DIM}provider: {provider}{RST}")
 
-    tasks = [" ".join(sys.argv[1:])] if len(sys.argv) > 1 else None
+    tasks = [" ".join(argv)] if argv else None
     if tasks:
         for t in tasks:
             print(f"{BLD}operator ▸{RST} {t}")

@@ -50,6 +50,7 @@ AGENTS = {
     "newbank": {
         "name": "NewBank Ops Assistant",
         "tag": "first-party · autonomous",
+        "passive_flag": "--passive",   # supports passive (observe) vs active (enforce)
         "purpose": (
             "An autonomous operations agent for a bank. An operator asks for "
             "something in plain English; the agent decides which tool to call "
@@ -208,8 +209,8 @@ class Run:
 RUNS: dict[str, Run] = {}
 
 
-def _run(agent, action):
-    return RUNS.setdefault(f"{agent}.{action}", Run())
+def _run(agent, action, passive=False):
+    return RUNS.setdefault(f"{agent}.{action}.{'p' if passive else 'a'}", Run())
 
 
 app = FastAPI(title="Cerbix demo console")
@@ -228,15 +229,15 @@ def agents():
 
 
 @app.get("/api/agent/{aid}")
-def agent(aid: str):
+def agent(aid: str, passive: bool = False):
     a = AGENTS.get(aid)
     if not a:
         return JSONResponse({"error": "unknown"}, status_code=404)
     return {"id": aid, "name": a["name"], "tag": a["tag"],
             "purpose": a["purpose"], "how": a["how"], "flow": a["flow"],
-            "code": a["code"],
+            "code": a["code"], "passive": bool(a.get("passive_flag")),
             "actions": [{"id": k, "label": v["label"],
-                         "status": _run(aid, k).status}
+                         "status": _run(aid, k, passive).status}
                         for k, v in a["actions"].items()]}
 
 
@@ -254,23 +255,27 @@ def code(aid: str):
 
 
 @app.post("/api/run/{aid}/{action}")
-def start(aid: str, action: str):
+def start(aid: str, action: str, passive: bool = False):
     if aid not in AGENTS or action not in AGENTS[aid]["actions"]:
         return JSONResponse({"error": "unknown"}, status_code=404)
-    r = _run(aid, action)
-    r.start(AGENTS[aid]["actions"][action]["cmd"])
+    cmd = list(AGENTS[aid]["actions"][action]["cmd"])
+    flag = AGENTS[aid].get("passive_flag")
+    if passive and flag:
+        cmd.append(flag)
+    r = _run(aid, action, passive)
+    r.start(cmd)
     return {"status": r.status}
 
 
 @app.post("/api/stop/{aid}/{action}")
-def stop(aid: str, action: str):
-    _run(aid, action).stop()
-    return {"status": _run(aid, action).status}
+def stop(aid: str, action: str, passive: bool = False):
+    _run(aid, action, passive).stop()
+    return {"status": _run(aid, action, passive).status}
 
 
 @app.get("/api/logs/{aid}/{action}")
-def logs(aid: str, action: str):
-    r = _run(aid, action)
+def logs(aid: str, action: str, passive: bool = False):
+    r = _run(aid, action, passive)
     return {"status": r.status, "lines": list(r.lines)}
 
 

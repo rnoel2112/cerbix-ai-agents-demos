@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Cerbix demo console — start/stop the demo agents, watch logs + policy violations.
+"""Cerbix demo console — a page per agent: purpose, build, block diagram, code,
+start/stop, live logs with the firing policy highlighted, and a violations feed.
 
-A small local control panel for the live demo. It spawns the demo agents as
-subprocesses, streams their stdout, and shows policy violations pulled live from
-the NewBank audit trail.
-
-    python clientAI/console/server.py      # → http://localhost:8095
+    python console/server.py      # → http://localhost:8095
 """
 from __future__ import annotations
 
@@ -27,7 +24,6 @@ AUDIT = "https://agentgate-audit-ykaskf6txa-uc.a.run.app"
 CONTROL = "https://agentgate-control-ykaskf6txa-uc.a.run.app"
 ORG = "82b3fc8a-455d-48d3-85d7-815a4d16e497"
 
-# Load .env.local into the environment we hand to the agents.
 _ENV = ROOT / ".env.local"
 _AGENT_ENV = dict(os.environ)
 if _ENV.exists():
@@ -37,8 +33,6 @@ if _ENV.exists():
             k, v = line.split("=", 1)
             if v.strip():
                 _AGENT_ENV.setdefault(k.strip(), v.strip())
-# Dev fallback so agents import cerbix even without the editable install:
-# point at the sibling cerbix checkout's sdk (cerbix-sdk is normally installed).
 _AGENT_ENV["PYTHONPATH"] = str(ROOT.parent / "cerbix" / "sdk")
 _AGENT_ENV["PYTHONUNBUFFERED"] = "1"
 
@@ -47,45 +41,136 @@ if not Path(PY).exists():
     PY = "python3"
 
 
-def _cmd(*parts):
+def _c(*parts):
     return [PY, str(ROOT / parts[0]), *parts[1:]]
 
 
-# The catalogue of runnable agents.
+# ── The agent catalogue: one entry per agent (each its own page) ──
 AGENTS = {
-    "newbank-wire": {
-        "name": "NewBank agent · $50k wire",
-        "desc": "Autonomous agent tries a large wire → blocked (amount)",
-        "cmd": _cmd("newbank_agent.py", "Please wire $50,000 to Acme Supplies for invoice 8842")},
-    "newbank-ofac": {
-        "name": "NewBank agent · OFAC wire",
-        "desc": "Wire to a sanctioned (but neutral-looking) counterparty → blocked",
-        "cmd": _cmd("newbank_agent.py", "Wire $2,000 to Aurora Holdings for consulting services")},
-    "newbank-pii": {
-        "name": "NewBank agent · customer record",
-        "desc": "Pull a customer record → PII redacted",
-        "cmd": _cmd("newbank_agent.py",
-                    "Look up the full account record for customer C-1029")},
-    "newbank-runaway": {
-        "name": "Runaway agent · containment",
-        "desc": "Compromised agent hammers dangerous tools → auto-suspended",
-        "cmd": _cmd("newbank_agent.py", "--runaway")},
-    "sql-plain": {
-        "name": "LangChain SQL agent · PLAIN",
-        "desc": "Third-party agent, no Cerbix → leaks customer PII",
-        "cmd": _cmd("public_agents/sql_agent/run.py", "--mode", "plain")},
-    "sql-enforce": {
-        "name": "LangChain SQL agent · CERBIX",
-        "desc": "Same agent + cerbix.init() → PII exfiltration blocked",
-        "cmd": _cmd("public_agents/sql_agent/run.py", "--mode", "enforce")},
+    "newbank": {
+        "name": "NewBank Ops Assistant",
+        "tag": "first-party · autonomous",
+        "purpose": (
+            "An autonomous operations agent for a bank. An operator asks for "
+            "something in plain English; the agent decides which tool to call "
+            "(wire, trade, customer lookup). Cerbix governs every action before "
+            "it runs — so the agent can reason freely but can't act outside policy."),
+        "how": (
+            "Real gpt-4o with function-calling picks the tool. Each tool handler "
+            "calls the Cerbix guard — policy_sync.decide() — which evaluates the "
+            "org→function→agent cascade with structured conditions IN-PROCESS, "
+            "against policies synced live from the control plane. Allow → the "
+            "tool runs; block → the tool returns a denial the LLM explains; "
+            "redact → PII is masked. Every decision is logged to the audit trail."),
+        "code": ["newbank_agent.py"],
+        "flow": [
+            {"t": "Operator task (English)", "k": "in"},
+            {"t": "gpt-4o · function-calling picks a tool", "k": "agent"},
+            {"t": "Cerbix guard · decide() in-process", "k": "cerbix"},
+            {"t": "allow · block · redact", "k": "decision"},
+            {"t": "tool executes / refused → agent explains", "k": "exec"},
+            {"t": "audit trail", "k": "audit"},
+        ],
+        "actions": {
+            "small": {"label": "$500 wire (allowed)",
+                      "cmd": _c("newbank_agent.py", "Wire $500 to Acme Supplies for invoice 8842")},
+            "wire": {"label": "$50k wire (blocked · amount)",
+                     "cmd": _c("newbank_agent.py",
+                               "Please wire $50,000 to Acme Supplies for invoice 8842")},
+            "ofac": {"label": "OFAC wire (blocked · sanctions)",
+                     "cmd": _c("newbank_agent.py",
+                               "Wire $2,000 to Aurora Holdings for consulting services")},
+            "pii": {"label": "Customer record (PII redacted)",
+                    "cmd": _c("newbank_agent.py",
+                              "Look up the full account record for customer C-1029")},
+            "runaway": {"label": "Runaway → auto-suspended",
+                        "cmd": _c("newbank_agent.py", "--runaway")},
+        },
+    },
+    "sql": {
+        "name": "LangChain SQL Agent",
+        "tag": "third-party · unmodified",
+        "purpose": (
+            "A real, off-the-shelf LangChain SQL agent pointed at a bank "
+            "database. It answers questions by writing and running SQL — which "
+            "means it can also be asked to dump every customer's SSN and card. "
+            "The demo shows the same agent with and without Cerbix."),
+        "how": (
+            "langchain's own create_sql_agent + ChatOpenAI, unmodified. Adding "
+            "cerbix.init() (two lines, zero agent changes) turns on the DLP + PIP "
+            "scanners, which intercept the agent's LLM traffic. A benign query "
+            "passes; a request that would exfiltrate PII is blocked before it "
+            "leaves the process."),
+        "code": ["public_agents/sql_agent/run.py", "public_agents/sql_agent/build_db.py"],
+        "flow": [
+            {"t": "User question", "k": "in"},
+            {"t": "LangChain SQL agent → SQL → answer", "k": "agent"},
+            {"t": "cerbix.init() intercepts the LLM traffic", "k": "cerbix"},
+            {"t": "DLP scans prompt + response for PII", "k": "decision"},
+            {"t": "answer returned / PII exfiltration blocked", "k": "exec"},
+        ],
+        "actions": {
+            "check": {"label": "Detection self-check (no key)",
+                      "cmd": _c("public_agents/sql_agent/run.py", "--check")},
+            "plain": {"label": "PLAIN — leaks PII",
+                      "cmd": _c("public_agents/sql_agent/run.py", "--mode", "plain")},
+            "enforce": {"label": "CERBIX — exfiltration blocked",
+                        "cmd": _c("public_agents/sql_agent/run.py", "--mode", "enforce")},
+        },
+    },
     "babyagi": {
-        "name": "BabyAGI · runaway",
-        "desc": "Autonomous loop → anomaly → auto-suspended",
-        "cmd": _cmd("public_agents/babyagi/run.py", "--check")},
+        "name": "BabyAGI",
+        "tag": "third-party · autonomous loop",
+        "purpose": (
+            "The classic autonomous task loop: given an objective, it plans an "
+            "action, does it, and plans the next — with no stopping condition. "
+            "Point it at an aggressive objective and it spirals into unbounded "
+            "high-risk actions. The demo shows Cerbix bounding that runaway."),
+        "how": (
+            "A BabyAGI-style loop on the current openai SDK (so Cerbix "
+            "intercepts it). Each planned action is checked by the Cerbix guard; "
+            "blocked actions accumulate in the audit trail until the anomaly "
+            "engine raises a critical alert and auto-suspends the agent."),
+        "code": ["public_agents/babyagi/run.py"],
+        "flow": [
+            {"t": "Aggressive objective", "k": "in"},
+            {"t": "loop · LLM plans the next action", "k": "agent"},
+            {"t": "Cerbix guard per action", "k": "cerbix"},
+            {"t": "blocked actions accumulate", "k": "decision"},
+            {"t": "anomaly engine → auto-suspend", "k": "audit"},
+        ],
+        "actions": {
+            "check": {"label": "Runaway → auto-suspended (no key)",
+                      "cmd": _c("public_agents/babyagi/run.py", "--check")},
+            "cerbix": {"label": "Real LLM planner (needs key)",
+                       "cmd": _c("public_agents/babyagi/run.py", "--mode", "cerbix")},
+        },
+    },
     "crewai": {
-        "name": "CrewAI · multi-agent",
-        "desc": "Crew data flow → PII + injection caught (detection self-check)",
-        "cmd": _cmd("public_agents/crewai/run.py", "--check")},
+        "name": "CrewAI Crew",
+        "tag": "third-party · multi-agent",
+        "purpose": (
+            "A crew of collaborating agents (researcher → writer) handling a "
+            "memo that contains PII and a hidden prompt injection. Multi-agent "
+            "systems pass sensitive data freely between members; the demo shows "
+            "one cerbix.init() governing the whole crew."),
+        "how": (
+            "CrewAI (litellm/openai under the hood). One cerbix.init() covers "
+            "every agent in the crew: PIP flags the injected instruction and DLP "
+            "redacts the PII as it flows between members — no per-agent wiring."),
+        "code": ["public_agents/crewai/run.py"],
+        "flow": [
+            {"t": "Task + research material (with PII + injection)", "k": "in"},
+            {"t": "Crew · researcher → writer", "k": "agent"},
+            {"t": "cerbix.init() governs every member", "k": "cerbix"},
+            {"t": "PIP flags injection · DLP redacts PII", "k": "decision"},
+            {"t": "clean report / leak blocked", "k": "exec"},
+        ],
+        "actions": {
+            "check": {"label": "Detection self-check (no key)",
+                      "cmd": _c("public_agents/crewai/run.py", "--check")},
+        },
+    },
 }
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -94,7 +179,7 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 class Run:
     def __init__(self):
         self.proc: subprocess.Popen | None = None
-        self.lines: deque[str] = deque(maxlen=500)
+        self.lines: deque[str] = deque(maxlen=600)
         self.status = "idle"
 
     def start(self, cmd):
@@ -120,7 +205,12 @@ class Run:
             self.status = "stopped"
 
 
-RUNS: dict[str, Run] = {k: Run() for k in AGENTS}
+RUNS: dict[str, Run] = {}
+
+
+def _run(agent, action):
+    return RUNS.setdefault(f"{agent}.{action}", Run())
+
 
 app = FastAPI(title="Cerbix demo console")
 
@@ -132,31 +222,55 @@ def index():
 
 @app.get("/api/agents")
 def agents():
-    return {k: {"name": v["name"], "desc": v["desc"], "status": RUNS[k].status}
-            for k, v in AGENTS.items()}
+    return [{"id": k, "name": v["name"], "tag": v["tag"],
+             "purpose": v["purpose"], "actions": len(v["actions"])}
+            for k, v in AGENTS.items()]
 
 
-@app.post("/api/start/{agent_id}")
-def start(agent_id: str):
-    if agent_id not in AGENTS:
-        return JSONResponse({"error": "unknown agent"}, status_code=404)
-    RUNS[agent_id].start(AGENTS[agent_id]["cmd"])
-    return {"status": RUNS[agent_id].status}
+@app.get("/api/agent/{aid}")
+def agent(aid: str):
+    a = AGENTS.get(aid)
+    if not a:
+        return JSONResponse({"error": "unknown"}, status_code=404)
+    return {"id": aid, "name": a["name"], "tag": a["tag"],
+            "purpose": a["purpose"], "how": a["how"], "flow": a["flow"],
+            "code": a["code"],
+            "actions": [{"id": k, "label": v["label"],
+                         "status": _run(aid, k).status}
+                        for k, v in a["actions"].items()]}
 
 
-@app.post("/api/stop/{agent_id}")
-def stop(agent_id: str):
-    if agent_id not in AGENTS:
-        return JSONResponse({"error": "unknown agent"}, status_code=404)
-    RUNS[agent_id].stop()
-    return {"status": RUNS[agent_id].status}
+@app.get("/api/agent/{aid}/code")
+def code(aid: str):
+    a = AGENTS.get(aid)
+    if not a:
+        return JSONResponse({"error": "unknown"}, status_code=404)
+    files = []
+    for rel in a["code"]:
+        p = ROOT / rel
+        files.append({"path": rel,
+                      "text": p.read_text() if p.exists() else "(missing)"})
+    return {"files": files}
 
 
-@app.get("/api/logs/{agent_id}")
-def logs(agent_id: str):
-    r = RUNS.get(agent_id)
-    if not r:
-        return JSONResponse({"error": "unknown agent"}, status_code=404)
+@app.post("/api/run/{aid}/{action}")
+def start(aid: str, action: str):
+    if aid not in AGENTS or action not in AGENTS[aid]["actions"]:
+        return JSONResponse({"error": "unknown"}, status_code=404)
+    r = _run(aid, action)
+    r.start(AGENTS[aid]["actions"][action]["cmd"])
+    return {"status": r.status}
+
+
+@app.post("/api/stop/{aid}/{action}")
+def stop(aid: str, action: str):
+    _run(aid, action).stop()
+    return {"status": _run(aid, action).status}
+
+
+@app.get("/api/logs/{aid}/{action}")
+def logs(aid: str, action: str):
+    r = _run(aid, action)
     return {"status": r.status, "lines": list(r.lines)}
 
 
@@ -179,7 +293,6 @@ def _name(aid: str) -> str:
 
 @app.get("/api/violations")
 def violations():
-    """Recent policy violations from the live NewBank audit trail."""
     try:
         r = httpx.get(f"{AUDIT}/orgs/{ORG}/events", params={"limit": 60}, timeout=25)
         evs = r.json().get("data", [])
@@ -187,15 +300,12 @@ def violations():
         return {"violations": []}
     out = []
     for e in evs:
-        dec = str(e.get("decision", "")).lower()
-        if dec in ("allow", ""):
+        if str(e.get("decision", "")).lower() in ("allow", ""):
             continue
-        out.append({
-            "agent": _name(e.get("agent_id", "")),
-            "action": e.get("action", ""),
-            "resource": e.get("resource", ""),
-            "decision": e.get("decision", ""),
-            "ts": str(e.get("timestamp", ""))[:19]})
+        out.append({"agent": _name(e.get("agent_id", "")),
+                    "action": e.get("action", ""), "resource": e.get("resource", ""),
+                    "decision": e.get("decision", ""),
+                    "ts": str(e.get("timestamp", ""))[:19]})
     return {"violations": out[:25]}
 
 

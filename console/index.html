@@ -62,6 +62,25 @@
   .vrow.block .d,.vrow.deny .d{color:var(--red)} .vrow.redact .d{color:var(--amber)} .vrow.shadow .d{color:var(--blue)}
   .vrow .meta{color:var(--dim);margin-top:2px}
   .muted{color:var(--dim)} details summary{cursor:pointer;color:var(--accent);font-size:13px}
+  /* Cerbix governance panel */
+  .cerbix{margin:14px 0 0}
+  .cbx{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--panel)}
+  .cbx.on{border-color:var(--accent);background:linear-gradient(180deg,rgba(45,212,191,.06),transparent)}
+  .cbx-h{display:flex;align-items:center;gap:9px;font-size:14px}
+  .cbx-h .cbx-link{margin-left:auto;font-size:12px}
+  .cbx-dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .cbx-dot.on{background:var(--accent);box-shadow:0 0 0 3px rgba(45,212,191,.2)}
+  .cbx-dot.off{background:var(--slate)}
+  .cbx-sub{color:var(--dim);font-size:12.5px;margin-top:5px}
+  .cbx-sub code{color:var(--text);background:var(--panel2);padding:1px 6px;border-radius:4px}
+  .cbx-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .cbx-a{border-color:var(--accent);color:var(--accent)} .cbx-a:hover{background:rgba(45,212,191,.12)}
+  .cbx-p{border-color:var(--blue);color:var(--blue)} .cbx-p:hover{background:rgba(88,166,255,.12)}
+  .cbx-res{margin-top:10px}
+  .cbx-line{border-radius:6px;padding:8px 11px;font-size:12.5px;border:1px solid var(--line)}
+  .cbx-line.ok{border-left:3px solid var(--green)} .cbx-line.blk{border-left:3px solid var(--red)}
+  .cbx-line code{color:var(--text)}
+  .cbx-reason{color:var(--dim);font-size:11.5px;margin-top:3px}
   .modes{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:14px}
   .mode{padding:7px 14px;font-size:12.5px;color:var(--dim);cursor:pointer;background:var(--panel)}
   .mode.on{background:var(--accent);color:var(--bg);font-weight:600}
@@ -77,7 +96,7 @@
 </style>
 </head>
 <body>
-<header><span class="badge">Cerbix</span><h1 id="crumb">Demo console</h1><span class="sub">org: NewBank · live enforcement</span></header>
+<header><span class="badge">AI Agents</span><h1 id="crumb">AI Agents</h1><span class="sub">client-side agents · register into Cerbix to govern</span></header>
 <div class="page" id="app"></div>
 <script>
 const app=document.getElementById('app');
@@ -127,6 +146,7 @@ async function detail(id){
     <div style="color:var(--accent);font-size:12px;margin:2px 0 12px">${esc(a.tag)}</div>
     <div class="box lead">${esc(a.purpose)}<div class="how"><b style="color:var(--text);font-weight:600">How it's built.</b> ${esc(a.how)}</div></div>
     ${modeToggle(a)}
+    <div id="cerbix" class="cerbix"></div>
     <div class="cols" style="margin-top:22px">
       <div>
         <h2>Block diagram</h2><div class="box">${diagram(a.flow)}</div>
@@ -140,8 +160,55 @@ async function detail(id){
       </div>
     </div>
     <h2>Policy violations · live audit</h2><div id="viol"></div>`;
-  renderRuns(a); loadCode(id); pollViol(); pollLog(id);
+  renderRuns(a); loadCode(id); pollViol(); pollLog(id); cerbixRender(id);
   timer=setInterval(()=>{refreshRuns(id);pollLog(id);pollViol();},1600);
+}
+
+async function cerbixRender(id){
+  const el=document.getElementById('cerbix'); if(!el)return;
+  const r=await j('/api/cerbix/reg/'+id);
+  if(!r.registered){
+    el.innerHTML=`<div class="cbx">
+      <div class="cbx-h"><span class="cbx-dot off"></span><b>Not yet governed by Cerbix</b></div>
+      <div class="cbx-sub">Register this client-side agent into Cerbix — then policy is enforced and every action is audited.</div>
+      <div class="cbx-btns">
+        <button class="cbx-a" onclick="cerbixRegister('${id}','active')">⚡ Register — Active (enforce)</button>
+        <button class="cbx-p" onclick="cerbixRegister('${id}','passive')">📡 Register — Passive (observe)</button>
+      </div></div>`;
+    return;
+  }
+  const active=r.mode==='active';
+  el.innerHTML=`<div class="cbx on">
+    <div class="cbx-h"><span class="cbx-dot on"></span>
+      <b>Governed by Cerbix · ${active?'Active — enforcing':'Passive — discovered'}</b>
+      <a class="cbx-link" href="${r.url}" target="_blank">View in Cerbix →</a></div>
+    <div class="cbx-sub">agent <code>${esc(r.agent_id)}</code></div>
+    ${active?`<div class="cbx-sub" style="margin-top:8px">Send a governed request through the Cerbix proxy:</div>
+    <div class="cbx-btns">
+      <button onclick="cerbixCall('${id}','benign')">List orders (benign)</button>
+      <button onclick="cerbixCall('${id}','pii')">Export client PII</button>
+      <button onclick="cerbixCall('${id}','wire')">Wire $250,000</button>
+    </div>
+    <div id="cbx-res" class="cbx-res"></div>`:''}
+  </div>`;
+}
+async function cerbixRegister(id,mode){
+  const el=document.getElementById('cerbix');
+  el.innerHTML=`<div class="cbx"><div class="cbx-sub">Registering (${mode})…</div></div>`;
+  await fetch('/api/cerbix/register/'+id+'?mode='+mode,{method:'POST'});
+  cerbixRender(id); pollViol();
+}
+async function cerbixCall(id,kind){
+  const box=document.getElementById('cbx-res');
+  if(box)box.innerHTML='<span class="muted">routing through the proxy…</span>';
+  const d=await j('/api/cerbix/call/'+id+'?kind='+kind,{method:'POST'});
+  if(box){
+    const ok=d.allowed;
+    box.innerHTML=`<div class="cbx-line ${ok?'ok':'blk'}">
+      <b>${ok?'✅ ALLOWED':'⛔ BLOCKED'}</b> · <code>/${esc(d.resource)}</code>
+      ${d.reason?`<div class="cbx-reason">${esc(d.reason)}</div>`:''}</div>`;
+  }
+  pollViol();
 }
 
 function renderRuns(a){

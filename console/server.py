@@ -22,7 +22,13 @@ ROOT = Path(__file__).parents[1]           # cerbix-demos repo root
 HERE = Path(__file__).parent
 AUDIT = "https://agentgate-audit-ykaskf6txa-uc.a.run.app"
 CONTROL = "https://agentgate-control-ykaskf6txa-uc.a.run.app"
-ORG = "82b3fc8a-455d-48d3-85d7-815a4d16e497"
+PROXY = "https://agentgate-proxy-ykaskf6txa-uc.a.run.app"
+# Register the demo agents into the org the operator is viewing in the Cerbix
+# product dashboard, so the governance shows up where they're logged in.
+# Default: Test Org (override with CERBIX_ORG).
+ORG = os.environ.get("CERBIX_ORG", "71e5d8a7-d242-4e2f-a09b-4dd7f282da00")
+# The Cerbix product dashboard — deep-linked from each governed agent.
+CERBIX_APP = os.environ.get("CERBIX_APP", "https://cerbix-ai.web.app")
 
 _ENV = ROOT / ".env.local"
 _AGENT_ENV = dict(os.environ)
@@ -35,6 +41,8 @@ if _ENV.exists():
                 _AGENT_ENV.setdefault(k.strip(), v.strip())
 _AGENT_ENV["PYTHONPATH"] = str(ROOT.parent / "cerbix" / "sdk")
 _AGENT_ENV["PYTHONUNBUFFERED"] = "1"
+# Bot scripts register into the same org the console governs.
+_AGENT_ENV["CERBIX_ORG_ID"] = ORG
 
 PY = str(ROOT / ".venv" / "bin" / "python")
 if not Path(PY).exists():
@@ -348,6 +356,104 @@ def violations():
                     "decision": e.get("decision", ""),
                     "ts": str(e.get("timestamp", ""))[:19]})
     return {"violations": out[:25]}
+
+
+# ── Register in Cerbix — the bridge to the product dashboard ──────────
+# From this AI-Agents console the operator registers a client-side agent into
+# Cerbix (active or passive), then drives governed requests through the proxy.
+# The same agent + its enforcement then appear on the Cerbix product dashboard.
+
+REG: dict[str, dict] = {}  # aid -> {agent_id, token, mode, url}
+
+# Preset governed calls to demonstrate enforcement at the proxy.
+_GOVERNED_CALLS = {
+    "benign": {"resource": "get_orders", "payload": {"limit": 5},
+               "label": "List recent orders (benign)"},
+    "pii": {"resource": "export_client_pii", "payload": {"customer": "C-1029"},
+            "label": "Export client PII (should be blocked)"},
+    "wire": {"resource": "execute_wire_transfer",
+             "payload": {"amount": 250000, "counterparty": "Acme"},
+             "label": "Wire $250,000 (high-risk)"},
+}
+
+
+@app.get("/api/cerbix/reg/{aid}")
+def cerbix_reg(aid: str):
+    r = REG.get(aid)
+    if not r:
+        return {"registered": False}
+    return {"registered": True, **r}
+
+
+@app.post("/api/cerbix/register/{aid}")
+def cerbix_register(aid: str, mode: str = "active"):
+    a = AGENTS.get(aid)
+    if not a:
+        return JSONResponse({"error": "unknown"}, status_code=404)
+    name = f"{aid}-agent"
+    if mode == "passive":
+        # Discover via a log scan — no code in the agent.
+        events = [
+            {"action": "POST", "resource": "export_client_pii",
+             "attributes": {}, "response_body": ""},
+            {"action": "POST", "resource": "get_orders", "attributes": {}},
+        ]
+        try:
+            r = httpx.post(f"{CONTROL}/orgs/{ORG}/scan", timeout=30, json={
+                "agent_name": name, "framework": aid,
+                "department": "operations", "events": events})
+            data = r.json().get("data", {})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+        agent_id = data.get("agent_id", "")
+        REG[aid] = {"agent_id": agent_id, "token": "", "mode": "passive",
+                    "url": f"{CERBIX_APP}/agents/{agent_id}"}
+        return {"registered": True, **REG[aid], "scan": data}
+
+    # Active — provision + KMS token; tool calls will route through the proxy.
+    try:
+        r = httpx.post(f"{CONTROL}/orgs/{ORG}/provision", timeout=30, json={
+            "name": name, "owner": "ops@newbank.example",
+            "purpose": a["purpose"][:180], "framework": aid, "scopes": ["*"]})
+        d = r.json().get("data", {})
+        agent_id = d["agent"]["id"]
+        token = d["token"]["access_token"]
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    # Mark it Active (enforced) so the product page shows it enforcing.
+    try:
+        httpx.patch(f"{CONTROL}/orgs/{ORG}/agents/{agent_id}/governance",
+                    timeout=15, json={"state": "enforced"})
+    except Exception:
+        pass
+    REG[aid] = {"agent_id": agent_id, "token": token, "mode": "active",
+                "url": f"{CERBIX_APP}/agents/{agent_id}"}
+    return {"registered": True, **REG[aid]}
+
+
+@app.post("/api/cerbix/call/{aid}")
+def cerbix_call(aid: str, kind: str = "benign"):
+    """Route a governed request through the Cerbix proxy with the agent's token."""
+    reg = REG.get(aid)
+    if not reg or reg["mode"] != "active" or not reg["token"]:
+        return JSONResponse(
+            {"error": "Register this agent as Active first."}, status_code=400)
+    call = _GOVERNED_CALLS.get(kind, _GOVERNED_CALLS["benign"])
+    try:
+        r = httpx.post(f"{PROXY}/api/{call['resource']}", timeout=30,
+                       headers={"Authorization": f"Bearer {reg['token']}"},
+                       json=call["payload"])
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    allowed = r.status_code < 400
+    reason = ""
+    if not allowed:
+        try:
+            reason = r.json().get("error", "")
+        except Exception:
+            reason = f"HTTP {r.status_code}"
+    return {"label": call["label"], "resource": call["resource"],
+            "allowed": allowed, "status": r.status_code, "reason": reason}
 
 
 if __name__ == "__main__":

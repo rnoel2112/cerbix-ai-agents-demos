@@ -166,37 +166,30 @@ async function detail(id){
 
 async function cerbixRender(id){
   const el=document.getElementById('cerbix'); if(!el)return;
-  const r=await j('/api/cerbix/reg/'+id);
+  const r=await j('/api/cerbix/status/'+id);
   if(!r.registered){
     el.innerHTML=`<div class="cbx">
-      <div class="cbx-h"><span class="cbx-dot off"></span><b>Not yet governed by Cerbix</b></div>
-      <div class="cbx-sub">Register this client-side agent into Cerbix — then policy is enforced and every action is audited.</div>
-      <div class="cbx-btns">
-        <button class="cbx-a" onclick="cerbixRegister('${id}','active')">⚡ Register — Active (enforce)</button>
-        <button class="cbx-p" onclick="cerbixRegister('${id}','passive')">📡 Register — Passive (observe)</button>
-      </div></div>`;
+      <div class="cbx-h"><span class="cbx-dot off"></span><b>Not governed by Cerbix</b>
+        <a class="cbx-link" href="${r.app}" target="_blank">Open Cerbix →</a></div>
+      <div class="cbx-sub">This is a client-side agent. Register it in <b>Cerbix</b> (Agents → Register Agent) to govern it — then start it here and watch it interact with Cerbix.</div>
+    </div>`;
     return;
   }
   const active=r.mode==='active';
   el.innerHTML=`<div class="cbx on">
     <div class="cbx-h"><span class="cbx-dot on"></span>
-      <b>Governed by Cerbix · ${active?'Active — enforcing':'Passive — discovered'}</b>
-      <a class="cbx-link" href="${r.url}" target="_blank">View in Cerbix →</a></div>
+      <b>Governed by Cerbix · ${active?'Active — enforcing':'Passive — observing'}</b>
+      <a class="cbx-link" href="${r.url}" target="_blank">Manage in Cerbix →</a></div>
     <div class="cbx-sub">agent <code>${esc(r.agent_id)}</code></div>
-    ${active?`<div class="cbx-sub" style="margin-top:8px">Send a governed request through the Cerbix proxy:</div>
+    ${active?`<div class="cbx-sub" style="margin-top:8px">Have this agent interact with Cerbix — its request routes through the proxy:</div>
     <div class="cbx-btns">
       <button onclick="cerbixCall('${id}','benign')">List orders (benign)</button>
       <button onclick="cerbixCall('${id}','pii')">Export client PII</button>
       <button onclick="cerbixCall('${id}','wire')">Wire $250,000</button>
     </div>
-    <div id="cbx-res" class="cbx-res"></div>`:''}
+    <div id="cbx-res" class="cbx-res"></div>`:
+    `<div class="cbx-sub" style="margin-top:8px">Passive — Cerbix observes this agent's log and flags would-be violations. Nothing is blocked.</div>`}
   </div>`;
-}
-async function cerbixRegister(id,mode){
-  const el=document.getElementById('cerbix');
-  el.innerHTML=`<div class="cbx"><div class="cbx-sub">Registering (${mode})…</div></div>`;
-  await fetch('/api/cerbix/register/'+id+'?mode='+mode,{method:'POST'});
-  cerbixRender(id); pollViol();
 }
 async function cerbixCall(id,kind){
   const box=document.getElementById('cbx-res');

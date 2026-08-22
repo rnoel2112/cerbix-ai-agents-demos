@@ -358,14 +358,13 @@ def violations():
     return {"violations": out[:25]}
 
 
-# ── Register in Cerbix — the bridge to the product dashboard ──────────
-# From this AI-Agents console the operator registers a client-side agent into
-# Cerbix (active or passive), then drives governed requests through the proxy.
-# The same agent + its enforcement then appear on the Cerbix product dashboard.
+# ── Cerbix governance — read-only status + interaction demo ───────────
+# Registration happens ONLY in Cerbix (the product). This console mimics the
+# client's agents: it reflects whether Cerbix is governing an agent, and once
+# an agent is registered there, lets you drive its traffic through Cerbix to
+# show enforcement. It never registers or provisions anything itself.
 
-REG: dict[str, dict] = {}  # aid -> {agent_id, token, mode, url}
-
-# Preset governed calls to demonstrate enforcement at the proxy.
+# Preset calls the (already-registered) client agent can make through Cerbix.
 _GOVERNED_CALLS = {
     "benign": {"resource": "get_orders", "payload": {"limit": 5},
                "label": "List recent orders (benign)"},
@@ -376,72 +375,54 @@ _GOVERNED_CALLS = {
              "label": "Wire $250,000 (high-risk)"},
 }
 
-
-@app.get("/api/cerbix/reg/{aid}")
-def cerbix_reg(aid: str):
-    r = REG.get(aid)
-    if not r:
-        return {"registered": False}
-    return {"registered": True, **r}
-
-
-@app.post("/api/cerbix/register/{aid}")
-def cerbix_register(aid: str, mode: str = "active"):
-    a = AGENTS.get(aid)
-    if not a:
-        return JSONResponse({"error": "unknown"}, status_code=404)
+# Convention: an agent shown here as "<aid>" is governed in Cerbix under the
+# name "<aid>-agent" (that's what the Cerbix register wizard is given).
+def _cerbix_agent(aid: str) -> dict | None:
     name = f"{aid}-agent"
-    if mode == "passive":
-        # Discover via a log scan — no code in the agent.
-        events = [
-            {"action": "POST", "resource": "export_client_pii",
-             "attributes": {}, "response_body": ""},
-            {"action": "POST", "resource": "get_orders", "attributes": {}},
-        ]
-        try:
-            r = httpx.post(f"{CONTROL}/orgs/{ORG}/scan", timeout=30, json={
-                "agent_name": name, "framework": aid,
-                "department": "operations", "events": events})
-            data = r.json().get("data", {})
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=502)
-        agent_id = data.get("agent_id", "")
-        REG[aid] = {"agent_id": agent_id, "token": "", "mode": "passive",
-                    "url": f"{CERBIX_APP}/agents/{agent_id}"}
-        return {"registered": True, **REG[aid], "scan": data}
-
-    # Active — provision + KMS token; tool calls will route through the proxy.
     try:
-        r = httpx.post(f"{CONTROL}/orgs/{ORG}/provision", timeout=30, json={
-            "name": name, "owner": "ops@newbank.example",
-            "purpose": a["purpose"][:180], "framework": aid, "scopes": ["*"]})
-        d = r.json().get("data", {})
-        agent_id = d["agent"]["id"]
-        token = d["token"]["access_token"]
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
-    # Mark it Active (enforced) so the product page shows it enforcing.
-    try:
-        httpx.patch(f"{CONTROL}/orgs/{ORG}/agents/{agent_id}/governance",
-                    timeout=15, json={"state": "enforced"})
+        r = httpx.get(f"{CONTROL}/orgs/{ORG}/agents", timeout=10)
+        for a in r.json().get("data", []):
+            if a.get("name") == name:
+                return a
     except Exception:
-        pass
-    REG[aid] = {"agent_id": agent_id, "token": token, "mode": "active",
-                "url": f"{CERBIX_APP}/agents/{agent_id}"}
-    return {"registered": True, **REG[aid]}
+        return None
+    return None
+
+
+def _agent_token(agent_id: str) -> str:
+    """Obtain a short-lived token for an already-registered agent (its identity
+    lives in Cerbix — this is the client using it, not registering)."""
+    r = httpx.post(f"{CONTROL}/orgs/{ORG}/agents/{agent_id}/token",
+                   timeout=20, json={})
+    return r.json()["data"]["access_token"]
+
+
+@app.get("/api/cerbix/status/{aid}")
+def cerbix_status(aid: str):
+    a = _cerbix_agent(aid)
+    if not a:
+        return {"registered": False, "app": CERBIX_APP}
+    gov = a.get("governance_state", "")
+    mode = "active" if gov == "enforced" else "passive" if gov == "shadow" \
+        else ("active" if a.get("status") == "active" else "passive")
+    return {"registered": True, "agent_id": a["id"], "status": a.get("status"),
+            "mode": mode, "url": f"{CERBIX_APP}/agents/{a['id']}",
+            "app": CERBIX_APP}
 
 
 @app.post("/api/cerbix/call/{aid}")
 def cerbix_call(aid: str, kind: str = "benign"):
-    """Route a governed request through the Cerbix proxy with the agent's token."""
-    reg = REG.get(aid)
-    if not reg or reg["mode"] != "active" or not reg["token"]:
+    """Drive an already-registered agent's request through Cerbix (proxy)."""
+    a = _cerbix_agent(aid)
+    if not a or a.get("status") != "active":
         return JSONResponse(
-            {"error": "Register this agent as Active first."}, status_code=400)
+            {"error": "Register this agent in Cerbix (Active) first."},
+            status_code=400)
     call = _GOVERNED_CALLS.get(kind, _GOVERNED_CALLS["benign"])
     try:
+        token = _agent_token(a["id"])
         r = httpx.post(f"{PROXY}/api/{call['resource']}", timeout=30,
-                       headers={"Authorization": f"Bearer {reg['token']}"},
+                       headers={"Authorization": f"Bearer {token}"},
                        json=call["payload"])
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)

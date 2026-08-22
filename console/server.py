@@ -88,6 +88,42 @@ AGENTS = {
                         "cmd": _c("newbank_agent.py", "--runaway")},
         },
     },
+    "twoapp": {
+        "name": "NewBank bot — two-app (passive & active)",
+        "tag": "production model · separate processes",
+        "purpose": (
+            "The production model: Cerbix and the agent are separate processes "
+            "that share no code. Passive = point Cerbix at the agent's log (no "
+            "code in the app). Active = one-line register + route tool calls "
+            "through the Cerbix proxy, enforced at the data plane."),
+        "how": (
+            "Passive runs a zero-Cerbix bot that writes an action log, then the "
+            "scanner posts it to the control-plane /scan endpoint — Cerbix "
+            "registers a discovered agent and flags would-be violations. Active "
+            "registers the agent, gets a KMS-signed token, and routes tool calls "
+            "through the live proxy, which enforces OPA + the policy cascade "
+            "before the action reaches the bank. Same policies; passive flags, "
+            "active blocks."),
+        "code": ["passive_demo/newbank_bot.py", "passive_demo/cerbix_scan.py",
+                 "active_demo/newbank_bot.py"],
+        "flow": [
+            {"t": "Agent runs (separate process)", "k": "agent"},
+            {"t": "passive: writes log  ·  active: tools via proxy", "k": "in"},
+            {"t": "Cerbix: /scan (flag)  ·  proxy (enforce)", "k": "cerbix"},
+            {"t": "discovered + flagged  ·  blocked / allowed", "k": "decision"},
+            {"t": "shows in the product dashboard", "k": "audit"},
+        ],
+        "actions": {
+            "passive_run": {"label": "Passive · run bot (writes log, no Cerbix)",
+                            "cmd": _c("passive_demo/newbank_bot.py",
+                                      "Wire $75,000 to Acme Supplies and pull the full record for customer C-1029")},
+            "passive_scan": {"label": "Passive · scan log → flag (discovered)",
+                             "cmd": _c("passive_demo/cerbix_scan.py")},
+            "active": {"label": "Active · $50k + $400 wire (proxy-enforced)",
+                       "cmd": _c("active_demo/newbank_bot.py",
+                                 "Please wire $50,000 to Acme Supplies, and also send $400 to Beta Corp")},
+        },
+    },
     "sql": {
         "name": "LangChain SQL Agent",
         "tag": "third-party · unmodified",

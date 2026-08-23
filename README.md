@@ -85,7 +85,16 @@ call → blocked by GDPR) using a token issued for the existing Cerbix identity 
 it never registers or provisions anything itself.
 
 By default it targets the org you're viewing in Cerbix (override with
-`CERBIX_ORG`).
+`CERBIX_ORG`). It points at the live cloud stack by default; to drive a
+**local** Cerbix (`../cerbix` running via `scripts/local_firestore.sh`), set the
+URLs:
+
+```bash
+CERBIX_CONTROL_URL=http://localhost:8081 \
+CERBIX_AUDIT_URL=http://localhost:8082 \
+CERBIX_PROXY_URL=http://localhost:8080 \
+python console/server.py
+```
 
 ---
 

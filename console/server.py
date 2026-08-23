@@ -20,9 +20,12 @@ from fastapi.responses import FileResponse, JSONResponse
 
 ROOT = Path(__file__).parents[1]           # cerbix-ai-agents-demos repo root
 HERE = Path(__file__).parent
-AUDIT = "https://agentgate-audit-ykaskf6txa-uc.a.run.app"
-CONTROL = "https://agentgate-control-ykaskf6txa-uc.a.run.app"
-PROXY = "https://agentgate-proxy-ykaskf6txa-uc.a.run.app"
+# Point at the live cloud stack by default, or a local one via env — e.g.
+#   CERBIX_CONTROL_URL=http://localhost:8081 CERBIX_AUDIT_URL=http://localhost:8082 \
+#   CERBIX_PROXY_URL=http://localhost:8080 python console/server.py
+AUDIT = os.environ.get("CERBIX_AUDIT_URL", "https://agentgate-audit-ykaskf6txa-uc.a.run.app")
+CONTROL = os.environ.get("CERBIX_CONTROL_URL", "https://agentgate-control-ykaskf6txa-uc.a.run.app")
+PROXY = os.environ.get("CERBIX_PROXY_URL", "https://agentgate-proxy-ykaskf6txa-uc.a.run.app")
 # Register the demo agents into the org the operator is viewing in the Cerbix
 # product dashboard, so the governance shows up where they're logged in.
 # Default: Test Org (override with CERBIX_ORG).

@@ -26,6 +26,8 @@ Cerbix and the agent are **separate processes** — they never share code.
 
 Same policies, both modes — passive flags, active enforces.
 
+> **Step-by-step end-to-end test (both modes):** see [docs/TEST_LOOP.md](docs/TEST_LOOP.md).
+
 ### Passive — govern an agent without touching it
 
 ```bash

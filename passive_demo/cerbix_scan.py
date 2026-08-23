@@ -6,12 +6,14 @@ Cerbix evaluates each logged action against NewBank's policies, registers the
 bot as a *discovered* agent, and records what it *would* have blocked — all
 visible in the Cerbix dashboard. The bot process is never touched.
 
-    python passive_demo/cerbix_scan.py
+    python passive_demo/cerbix_scan.py                 # scans newbank_bot.log
+    python passive_demo/cerbix_scan.py ../newbank_agent.log   # any agent log
 """
 from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import httpx
@@ -27,19 +29,22 @@ if _ENV.exists():
 CONTROL = os.environ.get("CERBIX_CONTROL_URL",
                          "https://agentgate-control-ykaskf6txa-uc.a.run.app")
 ORG = os.environ.get("CERBIX_ORG_ID", "82b3fc8a-455d-48d3-85d7-815a4d16e497")
-LOG = Path(__file__).parent / "newbank_bot.log"
+LOG = (Path(sys.argv[1]).expanduser() if len(sys.argv) > 1
+       else Path(__file__).parent / "newbank_bot.log")
 RED, GRN, YEL, DIM, RST = "\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 
 
 def main():
     if not LOG.exists():
-        print("No log yet — run: python passive_demo/newbank_bot.py \"...\"")
+        print(f"No log at {LOG} — run an agent first (e.g. "
+              f"python passive_demo/newbank_bot.py \"...\").")
         return
     events = [json.loads(ln) for ln in LOG.read_text().splitlines() if ln.strip()]
+    agent_name = (events[0].get("agent") if events else None) or "newbank-bot"
     print(f"Cerbix ▸ scanning {LOG.name} ({len(events)} actions) against "
           f"NewBank policy…\n")
     r = httpx.post(f"{CONTROL}/orgs/{ORG}/scan", timeout=30, json={
-        "agent_name": "newbank-bot (discovered)", "framework": "custom",
+        "agent_name": f"{agent_name} (discovered)", "framework": "custom",
         "events": [{"action": e["action"], "resource": e["resource"],
                     "attributes": e.get("attributes"),
                     "response_body": e.get("response_body", "")} for e in events]})

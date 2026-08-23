@@ -18,7 +18,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
-ROOT = Path(__file__).parents[1]           # cerbix-demos repo root
+ROOT = Path(__file__).parents[1]           # cerbix-ai-agents-demos repo root
 HERE = Path(__file__).parent
 AUDIT = "https://agentgate-audit-ykaskf6txa-uc.a.run.app"
 CONTROL = "https://agentgate-control-ykaskf6txa-uc.a.run.app"

@@ -53,7 +53,7 @@ Discovery page; active as an **active** agent, with the blocks in the Audit log.
 Assumes the `cerbix` repo is a **sibling** directory (`../cerbix`).
 
 ```bash
-cd cerbix-demos
+cd cerbix-ai-agents-demos
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ../cerbix/sdk           # cerbix-sdk (PyPI later)
 pip install -r requirements.txt

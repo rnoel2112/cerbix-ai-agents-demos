@@ -66,15 +66,26 @@ bash load_secrets.sh
 
 ---
 
-## The console (operator surface)
+## The console — the "AI Agents" client showcase
 
 ```bash
 python console/server.py       # → http://localhost:8095
 ```
 
-A page per agent: purpose, block diagram, source, start/stop, a live log with
-the **firing policy highlighted**, an **Active/Passive** toggle, a **payload &
-interception** panel, and the live **policy-violations** feed.
+This console **mimics a customer's client-side agents** — start/stop, live
+logs, view code, inject Cerbix code. It is **not** a registration surface:
+**registration happens only in Cerbix** (the product dashboard → Agents →
+Register Agent, Passive or Active).
+
+Each agent page reflects read-only **governance status** looked up from Cerbix
+("Governed · Active/Passive · Manage in Cerbix →", or "register it in Cerbix").
+Once an agent is registered + Active in Cerbix, the page can drive its traffic
+through the proxy to **demonstrate enforcement** (e.g. an "Export client PII"
+call → blocked by GDPR) using a token issued for the existing Cerbix identity —
+it never registers or provisions anything itself.
+
+By default it targets the org you're viewing in Cerbix (override with
+`CERBIX_ORG`).
 
 ---
 

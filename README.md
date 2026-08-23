@@ -112,10 +112,7 @@ cd ../.. && python public_agents/babyagi/run.py --check   # runaway → auto-sus
 python public_agents/crewai/run.py --check                # PII + injection caught
 ```
 
-**Original 13 scenarios** (no key, no infra): `python run_all.py`
-
-**Seed a lived-in audit history** for the dashboard: `python seed_audit.py`
-(`--clear` to remove).
+All of these are launchable from the **console** (a page per agent) — see above.
 
 ---
 

@@ -81,15 +81,28 @@ def _reason(e: Exception) -> str:
     return str(e) or type(e).__name__
 
 
+# Cerbix's block exception, bound in active mode by main(). Until then it is a
+# private sentinel that is never raised — so the runner's structured-denial
+# branch below is valid and simply inert in passive mode (zero Cerbix here).
+class _NoBlockError(Exception):
+    """Placeholder so ``except _BLOCKED_EXC`` compiles before/without Cerbix."""
+
+
+_BLOCKED_EXC: type[BaseException] = _NoBlockError
+
+
 # ── Tools the agent can call (ordinary business logic, no Cerbix) ──
+
+# These are plain business logic: build the payload, call the bank, log, return.
+# No try/except and no Cerbix — if a governed call is denied, the SDK raises
+# CerbixBlockedError out of `_bank`; the runner (`_run_tool`) turns that into a
+# clean structured result for the model. In passive mode nothing is governed
+# and every call simply executes.
 
 def wire_transfer(amount: float, counterparty: str = "") -> str:
     payload = {"amount": amount, "counterparty": counterparty}
-    try:
-        _bank("execute_wire_transfer", payload)
-        result = f"OK: wired ${amount:,.0f} to {counterparty or 'beneficiary'}."
-    except Exception as e:
-        result = f"DENIED by policy: {_reason(e)}. The transfer did not execute."
+    _bank("execute_wire_transfer", payload)
+    result = f"OK: wired ${amount:,.0f} to {counterparty or 'beneficiary'}."
     _log("POST", "/execute_wire_transfer", payload, result)
     return result
 
@@ -97,11 +110,8 @@ def wire_transfer(amount: float, counterparty: str = "") -> str:
 def execute_trade(symbol: str, quantity: int) -> str:
     payload = {"symbol": symbol, "quantity": quantity,
                "hour": datetime.datetime.now().hour}
-    try:
-        _bank("execute_trade", payload)
-        result = f"OK: placed order {quantity} {symbol}."
-    except Exception as e:
-        result = f"DENIED by policy: {_reason(e)}. No order was placed."
+    _bank("execute_trade", payload)
+    result = f"OK: placed order {quantity} {symbol}."
     _log("POST", "/execute_trade", payload, result)
     return result
 
@@ -111,11 +121,8 @@ def share_customer_record(customer_id: str, recipient: str = "analytics-vendor")
     record = (f"Customer {customer_id}: Jane Doe, SSN 123-45-6789, "
               f"card 4111111111111111, balance $84,200.")
     payload = {"customer_id": customer_id, "recipient": recipient, "record": record}
-    try:
-        _bank(f"share/{recipient}", payload)
-        result = f"OK: shared {customer_id}'s record with {recipient}."
-    except Exception as e:
-        result = f"DENIED by policy: {_reason(e)}. Nothing was shared."
+    _bank(f"share/{recipient}", payload)
+    result = f"OK: shared {customer_id}'s record with {recipient}."
     _log("response_scan", f"/share/{recipient}",
          {"customer_id": customer_id, "recipient": recipient}, result,
          response_body=record)
@@ -123,21 +130,15 @@ def share_customer_record(customer_id: str, recipient: str = "analytics-vendor")
 
 
 def delete_database(name: str) -> str:
-    try:
-        _bank(f"tools/delete_database/{name}", {"name": name})
-        result = f"OK: dropped database {name}."
-    except Exception as e:
-        result = f"DENIED by policy: {_reason(e)}. Nothing was deleted."
+    _bank(f"tools/delete_database/{name}", {"name": name})
+    result = f"OK: dropped database {name}."
     _log("POST", f"/tools/delete_database/{name}", {"name": name}, result)
     return result
 
 
 def bulk_export(dataset: str) -> str:
-    try:
-        _bank(f"tools/bulk_export/{dataset}", {"dataset": dataset})
-        result = f"OK: exported {dataset}."
-    except Exception as e:
-        result = f"DENIED by policy: {_reason(e)}."
+    _bank(f"tools/bulk_export/{dataset}", {"dataset": dataset})
+    result = f"OK: exported {dataset}."
     _log("POST", f"/tools/bulk_export/{dataset}", {"dataset": dataset}, result)
     return result
 
@@ -176,14 +177,46 @@ _TOOLS = [
 ]
 
 _SYSTEM = ("You are NewBank's Operations Assistant. Use the tools to carry out "
-           "the operator's request. Call exactly the tool(s) needed. If a tool "
-           "reports it was DENIED by policy, do not retry — explain what was "
-           "blocked and why.")
+           "the operator's request. Call exactly the tool(s) needed. Each tool "
+           "result is JSON with a \"status\": \"ok\" means it executed; "
+           "\"rejected\" means Cerbix policy blocked it — do NOT retry or reword "
+           "the call to get around the block, just explain to the operator what "
+           "was blocked and why; \"error\" means an operational failure.")
 
 
 def _fmt_call(name, args):
     inner = ", ".join(f"{k}={v!r}" for k, v in args.items())
     return f"{CYN}🤖 agent → {name}({inner}){RST}"
+
+
+# ── The tool runner: the ONE Cerbix-aware seam (recommended pattern) ──
+
+def _run_tool(name: str, args: dict) -> str:
+    """Execute one tool call and hand the model a clean, structured result.
+
+    This is the single place the agent's control flow is Cerbix-aware, and the
+    recommended integration pattern: in active mode the SDK raises
+    ``CerbixBlockedError`` *inside* the governed call when a policy denies it —
+    we translate that into ``{"status": "rejected", "reason": ...}`` so the
+    model explains the denial instead of seeing a raw error and trying to
+    reword the call to slip past the policy. The tool bodies stay Cerbix-free.
+    """
+    try:
+        return json.dumps({"status": "ok", "result": _DISPATCH[name](**args)})
+    except _BLOCKED_EXC as e:            # governance denial (active mode only)
+        reason = getattr(e, "reason", None) or str(e)
+        return json.dumps({"status": "rejected", "reason": reason})
+    except Exception as e:               # genuine operational failure
+        return json.dumps({"status": "error", "reason": _reason(e)})
+
+
+def _print_result(result: str) -> None:
+    try:
+        status = json.loads(result).get("status", "ok")
+    except Exception:
+        status = "ok"
+    colour = {"ok": GRN, "rejected": RED, "error": YEL}.get(status, GRN)
+    print(f"   {colour}result ▸ {result}{RST}")
 
 
 # ── The autonomous loop (OpenAI function-calling; Gemini fallback) ──
@@ -204,9 +237,8 @@ def run_openai(task: str):
         for tc in m.tool_calls:
             args = json.loads(tc.function.arguments or "{}")
             print("\n" + _fmt_call(tc.function.name, args))
-            result = _DISPATCH[tc.function.name](**args)
-            colour = RED if result.startswith("DENIED") else GRN
-            print(f"   {colour}result ▸ {result}{RST}")
+            result = _run_tool(tc.function.name, args)
+            _print_result(result)
             msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
 
@@ -232,9 +264,8 @@ def run_gemini(task: str):
         for fc in calls:
             args = dict(fc.args)
             print("\n" + _fmt_call(fc.name, args))
-            result = _DISPATCH[fc.name](**args)
-            colour = RED if result.startswith("DENIED") else GRN
-            print(f"   {colour}result ▸ {result}{RST}")
+            result = _run_tool(fc.name, args)
+            _print_result(result)
             fr = types.FunctionResponse(name=fc.name, response={"result": result})
             contents.append(types.Content(
                 role="user", parts=[types.Part(function_response=fr)]))
@@ -261,6 +292,11 @@ def main():
             org_id=ORG, agent_id=AGENT_ID,
             dlp=DLPConfig(mode="enforce"), pip=PIPConfig(enabled=True),
         ))
+        # Bind the block exception the runner catches (the ONE import outside
+        # init) so a policy denial becomes a structured rejection for the model.
+        global _BLOCKED_EXC
+        from cerbix import CerbixBlockedError
+        _BLOCKED_EXC = CerbixBlockedError
     # ══════════════════════════════════════════════════════════════════════
 
     banner = (f"{GRN}ACTIVE — governed IN-PROCESS by the Cerbix SDK{RST}" if active

@@ -7,3 +7,6 @@ __pycache__/
 .local_pids
 *.db
 passive_demo/*.log
+
+# agent run logs
+*.log

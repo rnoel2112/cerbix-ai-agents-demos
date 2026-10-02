@@ -5,7 +5,26 @@ third-party) that are *governed by* Cerbix. This is a **separate repo** — not
 part of the Cerbix product. It depends on `cerbix-sdk` externally and talks to
 the live Cerbix control / audit / proxy plane.
 
-Everything runs against the live stack and the demo org **NewBank**
+## Quickstart — run against a local Cerbix (laptop)
+
+No cloud, no API keys. Run Cerbix on your machine, then a governed demo agent:
+
+```bash
+# 1) start Cerbix locally (in the cerbix repo next door)
+cd ../cerbix && ./cerbix up
+
+# 2) run the governed-agent demo (this repo)
+cd ../cerbix-ai-agents-demos && python demo_local.py
+```
+
+`demo_local.py` registers an agent with the local Cerbix and shows, end to end:
+**identity** (no token → 401), a **governed action** (agent wire → 200 ALLOW),
+and the **kill-switch** (suspend the agent → 403 BLOCK). Open
+http://localhost:3000 for the audit trail. Stop with `./cerbix down`.
+
+---
+
+Everything else below runs against the live stack and the demo org **NewBank**
 (`82b3fc8a-455d-48d3-85d7-815a4d16e497`):
 
 - control — `https://agentgate-control-ykaskf6txa-uc.a.run.app`
